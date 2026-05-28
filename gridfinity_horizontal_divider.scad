@@ -33,6 +33,17 @@ back_wall_thickness = 4;
 // Extra height of the back support above the top of the topmost shelf, in mm. The wall always extends down to the top of the base.
 back_wall_overhang = 2;
 
+/* [Print Pieces] */
+// Which piece to render.
+//   all   - the whole assembled model as a single solid (no slots, no tabs visible)
+//   base  - just the gridfinity base + back support, with slots cut for shelf tabs (printable)
+//   shelf - a single shelf laid flat for printing (back tab extends past the shelf body)
+// All shelves are identical, so the "shelf" piece is printed `shelf_count` times.
+part = "all"; // [all, base, shelf]
+// Clearance (mm) added around each tab when cutting the matching slot in the back wall.
+// Larger values = looser fit. Typical FDM tolerance is 0.15 - 0.3 mm.
+slot_tolerance = 0.2;
+
 /* [Wall Pattern (cut through shelves)] */
 // Cut a pattern of holes through each shelf
 wallpattern_enabled=true;
@@ -202,6 +213,8 @@ module Gridfinity_HorizontalShelves(
   backWallThickness = back_wall_thickness,
   backWallOverhang = back_wall_overhang,
   baseHeightUnits = base_height_units,
+  partToRender = part,
+  slotTolerance = slot_tolerance,
   wallpatternEnabled = wallpattern_enabled,
   pattern_settings = PatternSettings(
     patternEnabled = wallpattern_enabled,
@@ -278,98 +291,153 @@ module Gridfinity_HorizontalShelves(
       shelfY=[shelfY0, shelfY1],
       shelfDepth=_shelfDepth);
 
-  // --- Gridfinity base (solid, no lip, no cup walls) ---
-  grid_block(
-    num_x = num_x,
-    num_y = num_y,
-    num_z = baseHeightUnits,
-    position = "zero",
-    filledin = "enabled",
-    wall_thickness = 1.2,
-    cupBase_settings = cupBase_settings,
-    lip_settings = LipSettings(lipStyle = "none"));
-
-  // --- Back support wall ---
-  // BackWallFootprint2D is laid out with its square front edge at local y=0 and rounded back at local y=size.y.
-  color(env_colour(color_cup))
-  translate([outerOrigin.x, backWallY0, topOfBase])
-  linear_extrude(height = totalHeight - topOfBase)
-    BackWallFootprint2D(
-      size = [outerSize.x, backWallThickness],
-      backRadius = outerRadius);
-
-  // --- Shelves ---
-  // Each shelf is a rounded plate that sits with its square back edge flush against the back wall.
-  // ShelfFootprint2D has square back at local y=size.y, rounded front at y=0.
-  // We want absolute Y to run from shelfY0 (front) to shelfY1 (slightly past the back wall front face).
+  // --- Shelf geometry shared by every "part" mode ---
   shelfPlanSize = [outerSize.x, shelfY1 - shelfY0];
   _border = wallpattern_border == 0 ? shelfFrontRadius : wallpattern_border;
-
   // Distance in Y from the shelf's local origin (front edge) to its pivot at the front face of the back wall
   pivotOffsetY = backWallY0 - shelfY0;
 
-  // Clip box: keep everything between the front of the model and the back of the back wall in Y.
-  // After tilting a shelf, this prevents the embedded back portion from poking past backWallY1.
+  // The shelf body in its own local frame (Y=0 is the front edge, Y=shelfPlanSize.y is the back of the tab).
+  // `padding` inflates X and Z (used to build the slot cutter slightly larger than the tab).
+  module unrotatedShelfBody(padding = 0){
+    translate([-padding, 0, -padding])
+    linear_extrude(height = shelfThickness + padding*2)
+      ShelfFootprint2D(
+        size = [shelfPlanSize.x + padding*2, shelfPlanSize.y],
+        frontRadius = shelfFrontRadius,
+        frontInset = shelfFrontInset);
+  }
+
+  // Pattern cutout for a shelf in its own local frame.
+  module unrotatedShelfPatternCut(){
+    translate([0, 0, -fudgeFactor])
+    intersection(){
+      linear_extrude(height = shelfThickness + fudgeFactor*2)
+        offset(delta = -_border)
+          ShelfFootprint2D(
+            size = shelfPlanSize,
+            frontRadius = shelfFrontRadius,
+            frontInset = shelfFrontInset);
+
+      translate([shelfPlanSize.x/2, shelfPlanSize.y/2])
+      cutout_pattern(
+        patternStyle = pattern_settings[iPatternStyle],
+        canvasSize = shelfPlanSize,
+        border = _border*2,
+        customShape = false,
+        circleFn = pattern_settings[iPatternHoleSides],
+        cellSize = pattern_settings[iPatternCellSize],
+        strength = pattern_settings[iPatternStrength],
+        holeHeight = shelfThickness*2,
+        center = true,
+        fill = pattern_settings[iPatternFill],
+        patternGridChamfer = pattern_settings[iPatternGridChamfer],
+        patternVoronoiNoise = pattern_settings[iPatternVoronoiNoise],
+        patternBrickWeight = pattern_settings[iPatternBrickWeight],
+        partialDepth = pattern_settings[iPatternDepth] != 0,
+        holeRadius = pattern_settings[iPatternHoleRadius],
+        source = "Gridfinity Horizontal Shelves",
+        rotateGrid = pattern_settings[iPatternRotate],
+        patternFs = pattern_settings[iPatternFs]);
+    }
+  }
+
+  // Position+tilt children to shelf `i`'s assembled location. Children should be authored in the
+  // shelf's local frame (origin at front-left-bottom of the shelf body).
+  module positionShelf(i){
+    z = shelfBottoms[i];
+    translate([outerOrigin.x, backWallY0, z])
+    rotate([-shelfFrontAngle, 0, 0])
+    translate([0, -pivotOffsetY, 0])
+    children();
+  }
+
+  // Clip box for the assembled view: keeps each rotated shelf from poking through the back of the back wall.
   clipExtent = 1000;
-  module ShelfClip(){
+  module shelfAssembledClip(){
     translate([outerOrigin.x - clipExtent, shelfY0 - clipExtent, -clipExtent])
       cube([outerSize.x + clipExtent*2,
             (backWallY1 - shelfY0) + clipExtent,
             clipExtent*3]);
   }
 
-  for(i = [0 : shelfCount-1]){
-    z = shelfBottoms[i];
+  // Clip box used when cutting slots: limits the slot volume to the back wall's Y range.
+  module backWallSliceClip(){
+    translate([outerOrigin.x - clipExtent, backWallY0, -clipExtent])
+      cube([outerSize.x + clipExtent*2,
+            backWallThickness,
+            clipExtent*3]);
+  }
+
+  module gridfinityBase(){
+    grid_block(
+      num_x = num_x,
+      num_y = num_y,
+      num_z = baseHeightUnits,
+      position = "zero",
+      filledin = "enabled",
+      wall_thickness = 1.2,
+      cupBase_settings = cupBase_settings,
+      lip_settings = LipSettings(lipStyle = "none"));
+  }
+
+  module backWallSolid(){
+    // BackWallFootprint2D is laid out with its square front edge at local y=0 and rounded back at local y=size.y.
+    color(env_colour(color_cup))
+    translate([outerOrigin.x, backWallY0, topOfBase])
+    linear_extrude(height = totalHeight - topOfBase)
+      BackWallFootprint2D(
+        size = [outerSize.x, backWallThickness],
+        backRadius = outerRadius);
+  }
+
+  // The assembled shelf at index `i`, with its pattern cutouts and clipped at the back wall back face.
+  module assembledShelf(i){
     color(env_colour(color_cup))
     intersection(){
-      // Translate pivot to world (X anywhere, Y = backWallY0, Z = z), tilt by -angle around X,
-      // then shift the shelf body so its front-bottom corner sits at world (outerOrigin.x, shelfY0, z).
-      translate([outerOrigin.x, backWallY0, z])
-      rotate([-shelfFrontAngle, 0, 0])
-      translate([0, -pivotOffsetY, 0])
-      difference(){
-        linear_extrude(height = shelfThickness)
-          ShelfFootprint2D(
-            size = shelfPlanSize,
-            frontRadius = shelfFrontRadius,
-            frontInset = shelfFrontInset);
-
-        if(wallpatternEnabled){
-          translate([0, 0, -fudgeFactor])
-          intersection(){
-            linear_extrude(height = shelfThickness + fudgeFactor*2)
-              offset(delta = -_border)
-                ShelfFootprint2D(
-                  size = shelfPlanSize,
-                  frontRadius = shelfFrontRadius,
-                  frontInset = shelfFrontInset);
-
-            translate([shelfPlanSize.x/2, shelfPlanSize.y/2])
-            cutout_pattern(
-            patternStyle = pattern_settings[iPatternStyle],
-            canvasSize = shelfPlanSize,
-            border = _border*2,
-            customShape = false,
-            circleFn = pattern_settings[iPatternHoleSides],
-            cellSize = pattern_settings[iPatternCellSize],
-            strength = pattern_settings[iPatternStrength],
-            holeHeight = shelfThickness*2,
-            center = true,
-            fill = pattern_settings[iPatternFill],
-            patternGridChamfer = pattern_settings[iPatternGridChamfer],
-            patternVoronoiNoise = pattern_settings[iPatternVoronoiNoise],
-            patternBrickWeight = pattern_settings[iPatternBrickWeight],
-            partialDepth = pattern_settings[iPatternDepth] != 0,
-            holeRadius = pattern_settings[iPatternHoleRadius],
-            source = "Gridfinity Horizontal Shelves",
-            rotateGrid = pattern_settings[iPatternRotate],
-            patternFs = pattern_settings[iPatternFs]);
-          }
+      positionShelf(i)
+        difference(){
+          unrotatedShelfBody();
+          if(wallpatternEnabled) unrotatedShelfPatternCut();
         }
-      }
 
-      // Clip volume: keeps the rotated shelf from poking through the back of the back wall.
-      ShelfClip();
+      shelfAssembledClip();
     }
+  }
+
+  // Inflated rotated tab volume for shelf `i`, clipped to the back wall Y range, used as a slot cutter.
+  module shelfSlotCutter(i){
+    intersection(){
+      positionShelf(i) unrotatedShelfBody(padding = slotTolerance);
+      backWallSliceClip();
+    }
+  }
+
+  // A single shelf laid flat (untilted, at z=0) for printing. Includes the tab so it slots into the slot.
+  module printableShelf(){
+    color(env_colour(color_cup))
+    difference(){
+      unrotatedShelfBody();
+      if(wallpatternEnabled) unrotatedShelfPatternCut();
+    }
+  }
+
+  // --- Dispatch on which part to render ---
+  if(partToRender == "all"){
+    gridfinityBase();
+    backWallSolid();
+    for(i = [0 : shelfCount-1]) assembledShelf(i);
+  } else if(partToRender == "base"){
+    gridfinityBase();
+    difference(){
+      backWallSolid();
+      union(){
+        for(i = [0 : shelfCount-1]) shelfSlotCutter(i);
+      }
+    }
+  } else if(partToRender == "shelf"){
+    printableShelf();
+  } else {
+    assert(false, str("Unknown part: '", partToRender, "'. Expected 'all', 'base', or 'shelf'."));
   }
 }
