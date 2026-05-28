@@ -43,6 +43,12 @@ part = "all"; // [all, base, shelf]
 // Clearance (mm) added around each tab when cutting the matching slot in the back wall.
 // Larger values = looser fit. Typical FDM tolerance is 0.15 - 0.3 mm.
 slot_tolerance = 0.2;
+// Dovetail flare (mm per side) at the back of each tab. The tab is narrower at the front (where it
+// enters the back wall) and flares to full shelf width at its deepest point. Combined with the
+// matching slot, this locks each shelf so it cannot be pulled forward; the shelf installs by sliding
+// it in horizontally from one side. 0 = no dovetail (friction-fit only; not recommended for loaded
+// shelves). 2 - 4 mm is typical for FDM at this scale.
+tab_dovetail = 3;
 
 /* [Wall Pattern (cut through shelves)] */
 // Cut a pattern of holes through each shelf
@@ -152,24 +158,54 @@ module RoundedRect2D(size, radius){
 }
 
 // 2D shape used as the shelf footprint in plan view (X = width, Y = depth, +Y is back).
-// The back edge (Y = size.y) is square and full-width so it meets the back wall flush.
-// `frontInset` narrows each side at the front, producing a trapezoidal shape with straight
-// sides running from the back corners to the (rounded) front corners.
-module ShelfFootprint2D(size, frontRadius, frontInset = 0){
+// The shape has two regions joined at Y = pivotY:
+//   - Visible portion (Y = 0 .. pivotY): trapezoidal, rounded front corners with `frontInset`
+//     narrowing each side at the very front. At Y = pivotY the visible portion is full width
+//     so it butts flush against the back wall.
+//   - Tab portion (Y = pivotY .. size.y): the dovetail tab. At Y = pivotY the tab is narrower
+//     by `dovetailFlare` on each side; at Y = size.y it is full width. This produces a step at
+//     Y = pivotY that locks the assembled shelf against forward (-Y) removal — the shelf must
+//     be installed by sliding it horizontally (along X) into the matching slot.
+// When dovetailFlare = 0 the tab is rectangular (friction-fit only).
+// When pivotY = 0 the visible portion collapses and the whole shape is the tab (used in cases
+// where no visible shelf exists).
+module ShelfFootprint2D(size, frontRadius, frontInset = 0, dovetailFlare = 0, pivotY = 0){
   _inset = max(0, min(frontInset, size.x/2 - fudgeFactor));
-  _r = min(frontRadius, min(size.x - 2*_inset, size.y)/2);
+  _r = min(frontRadius, min(size.x - 2*_inset, max(fudgeFactor, pivotY))/2);
+  _pivot = max(0, min(pivotY, size.y - fudgeFactor));
+  _flare = max(0, min(dovetailFlare, size.x/2 - fudgeFactor));
 
-  hull(){
-    // Back-edge thin strip (full width)
-    translate([0, size.y - fudgeFactor]) square([size.x, fudgeFactor]);
+  union(){
+    // 1. Visible portion: front rounded corners flaring out to full width at Y = pivotY.
+    if(_pivot > 0){
+      hull(){
+        // Full-width strip along Y = pivotY
+        translate([0, _pivot - fudgeFactor]) square([size.x, fudgeFactor*2]);
 
-    // Front corners (rounded or square)
-    if(_r > 0){
-      translate([_inset + _r, _r]) circle(r=_r);
-      translate([size.x - _inset - _r, _r]) circle(r=_r);
-    } else {
-      translate([_inset, 0]) square([fudgeFactor, fudgeFactor]);
-      translate([size.x - _inset - fudgeFactor, 0]) square([fudgeFactor, fudgeFactor]);
+        // Front corners
+        if(_r > 0){
+          translate([_inset + _r, _r]) circle(r=_r);
+          translate([size.x - _inset - _r, _r]) circle(r=_r);
+        } else {
+          translate([_inset, 0]) square([fudgeFactor, fudgeFactor]);
+          translate([size.x - _inset - fudgeFactor, 0]) square([fudgeFactor, fudgeFactor]);
+        }
+      }
+    }
+
+    // 2. Tab portion: dovetail flares from narrow (at Y = pivotY) to full width (at Y = size.y).
+    if(_pivot < size.y - fudgeFactor){
+      if(_flare > 0){
+        hull(){
+          // Narrow strip at front of tab
+          translate([_flare, _pivot]) square([size.x - _flare*2, fudgeFactor]);
+          // Full-width strip at back of tab
+          translate([0, size.y - fudgeFactor]) square([size.x, fudgeFactor]);
+        }
+      } else {
+        // No dovetail flare — plain rectangular tab
+        translate([0, _pivot]) square([size.x, size.y - _pivot]);
+      }
     }
   }
 }
@@ -215,6 +251,7 @@ module Gridfinity_HorizontalShelves(
   baseHeightUnits = base_height_units,
   partToRender = part,
   slotTolerance = slot_tolerance,
+  tabDovetail = tab_dovetail,
   wallpatternEnabled = wallpattern_enabled,
   pattern_settings = PatternSettings(
     patternEnabled = wallpattern_enabled,
@@ -305,7 +342,9 @@ module Gridfinity_HorizontalShelves(
       ShelfFootprint2D(
         size = [shelfPlanSize.x + padding*2, shelfPlanSize.y],
         frontRadius = shelfFrontRadius,
-        frontInset = shelfFrontInset);
+        frontInset = shelfFrontInset,
+        dovetailFlare = tabDovetail,
+        pivotY = pivotOffsetY);
   }
 
   // Pattern cutout for a shelf in its own local frame.
@@ -317,7 +356,9 @@ module Gridfinity_HorizontalShelves(
           ShelfFootprint2D(
             size = shelfPlanSize,
             frontRadius = shelfFrontRadius,
-            frontInset = shelfFrontInset);
+            frontInset = shelfFrontInset,
+            dovetailFlare = tabDovetail,
+            pivotY = pivotOffsetY);
 
       translate([shelfPlanSize.x/2, shelfPlanSize.y/2])
       cutout_pattern(
