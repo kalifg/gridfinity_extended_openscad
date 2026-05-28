@@ -34,6 +34,9 @@ default_wall_thickness = 0;// 0.01
 //under size the bin top by this amount to allow for better stacking
 default_headroom = 0.8; // 0.1
 
+// Shape of the cup's inner cavity and lip. "rounded_rect" matches the cup's outer footprint (original behaviour). "circle" carves a single inscribed cylindrical cavity (with matching circular lip), useful for holding round bowls/beakers/jars.
+default_cavity_shape = "rounded_rect"; // [rounded_rect, circle]
+
 /* [Cup Lip] */
 // Style of the cup lip
 default_lip_style = "normal";  // [ normal, reduced, minimum, none:not stackable ]
@@ -232,6 +235,7 @@ module gridfinity_cup(
   height,
   filled_in=default_filled_in,
   wall_thickness=default_wall_thickness,
+  cavity_shape=default_cavity_shape,
   label_settings=LabelSettings(
     labelStyle=default_label_style, 
     labelPosition=default_label_position, 
@@ -493,6 +497,7 @@ module gridfinity_cup(
             cupBase_settings = cupBase_settings,
             finger_slide_settings = finger_slide_settings,
             wall_thickness=wall_thickness,
+            cavity_shape=cavity_shape,
             calculated_vertical_separator_positions = calculated_vertical_separator_positions,
             calculated_horizontal_separator_positions = calculated_horizontal_separator_positions,
             lip_settings=lip_settings,
@@ -1138,6 +1143,7 @@ module partitioned_cavity(num_x, num_y, num_z,
     cupBase_settings=[],
     finger_slide_settings=[],
     wall_thickness=0,
+    cavity_shape=default_cavity_shape,
     calculated_vertical_separator_positions=calculated_vertical_separator_positions,
     calculated_horizontal_separator_positions=calculated_horizontal_separator_positions,
     lip_settings=[], 
@@ -1171,6 +1177,7 @@ module partitioned_cavity(num_x, num_y, num_z,
       cupBase_settings=cupBase_settings,
       finger_slide_settings = finger_slide_settings,
       wall_thickness=wall_thickness,
+      cavity_shape=cavity_shape,
       lip_settings=lip_settings, 
       sliding_lid_settings=sliding_lid_settings, 
       headroom=headroom);
@@ -1212,9 +1219,61 @@ module partitioned_cavity(num_x, num_y, num_z,
 
 
 
+// Helper for basic_cavity. Replaces the
+//   hull() cornercopy(corner_offset, num_x, num_y) tz(z) cylinder(r=R, h=H)
+// (or r1=,r2= cone) pattern with either the original hull-of-corner-cylinders
+// rounded-rect, or a single inscribed cylinder at the cup's center when
+// cavity_shape == "circle".
+module _cavity_shape_cyl(cavity_shape, corner_offset, num_x, num_y, z, h,
+                         cyl_r=undef, r1=undef, r2=undef) {
+  is_cone = !is_undef(r1) || !is_undef(r2);
+  effective_outer_r = is_cone ? max(r1, r2) : cyl_r;
+  if(cavity_shape == "circle") {
+    // Outer extent the equivalent rounded rect would have occupied:
+    //   2*corner_offset + 2*effective_outer_r per axis.
+    extent_x = env_pitch().x * (num_x - 1) + 2*corner_offset.x + 2*effective_outer_r;
+    extent_y = env_pitch().y * (num_y - 1) + 2*corner_offset.y + 2*effective_outer_r;
+    R_top = min(extent_x, extent_y) / 2;
+    cx = env_pitch().x * num_x / 2;
+    cy = env_pitch().y * num_y / 2;
+    translate([cx, cy, z])
+      if(is_cone)
+        cylinder(r1 = R_top - (effective_outer_r - r1),
+                 r2 = R_top - (effective_outer_r - r2),
+                 h = h);
+      else
+        cylinder(r = R_top, h = h);
+  } else {
+    tz(z) hull() cornercopy(corner_offset, num_x, num_y)
+      if(is_cone)
+        cylinder(r1=r1, r2=r2, h=h);
+      else
+        cylinder(r=cyl_r, h=h);
+  }
+}
+
+// Same as _cavity_shape_cyl but for the rounded-bottom main cavity that uses
+// roundedCylinder(h, r, roundedr1, roundedr2).
+module _cavity_shape_rounded_cyl(cavity_shape, corner_offset, num_x, num_y, z, h,
+                                 cyl_r, roundedr1=0, roundedr2=0) {
+  if(cavity_shape == "circle") {
+    extent_x = env_pitch().x * (num_x - 1) + 2*corner_offset.x + 2*cyl_r;
+    extent_y = env_pitch().y * (num_y - 1) + 2*corner_offset.y + 2*cyl_r;
+    R_top = min(extent_x, extent_y) / 2;
+    cx = env_pitch().x * num_x / 2;
+    cy = env_pitch().y * num_y / 2;
+    translate([cx, cy, z])
+      roundedCylinder(h=h, r=R_top, roundedr1=roundedr1, roundedr2=roundedr2);
+  } else {
+    tz(z) hull() cornercopy(corner_offset, num_x, num_y)
+      roundedCylinder(h=h, r=cyl_r, roundedr1=roundedr1, roundedr2=roundedr2);
+  }
+}
+
 module basic_cavity(num_x, num_y, num_z, 
     finger_slide_settings = [],
     wall_thickness=default_wall_thickness,
+    cavity_shape=default_cavity_shape,
     lip_settings = [],
     cupBase_settings = [],
     sliding_lid_settings = [],
@@ -1315,36 +1374,32 @@ module basic_cavity(num_x, num_y, num_z,
       else { // normal
         lowerTaperZ = filledInZ-gf_lip_height-lipSupportThickness;
         if(lowerTaperZ <= floorht){
-          hull() cornercopy(lip_inner_corner_center, num_x, num_y)
-            tz(floorht) 
-            cylinder(r=innerLipRadius, h=filledInZ-floorht+fudgeFactor*4); // lip
+          _cavity_shape_cyl(cavity_shape, lip_inner_corner_center, num_x, num_y,
+            z=floorht, h=filledInZ-floorht+fudgeFactor*4,
+            cyl_r=innerLipRadius); // lip
         } else {
           if(headroom > 0)
-          hull() cornercopy(inner_corner_center, num_x, num_y)
-            tz(filledInZ-headroom-fudgeFactor) 
-            cylinder(r=innerLipRadius, h=headroom+fudgeFactor*4); // lip
+          _cavity_shape_cyl(cavity_shape, inner_corner_center, num_x, num_y,
+            z=filledInZ-headroom-fudgeFactor, h=headroom+fudgeFactor*4,
+            cyl_r=innerLipRadius); // lip
 
-          hull() cornercopy(lip_inner_corner_center, num_x, num_y)
-            tz(filledInZ-gf_lip_height-fudgeFactor) 
-            cylinder(r=(innerLipRadius > innerWallRadius ? innerWallRadius : innerLipRadius), h=gf_lip_height+fudgeFactor*4); // lip
+          _cavity_shape_cyl(cavity_shape, lip_inner_corner_center, num_x, num_y,
+            z=filledInZ-gf_lip_height-fudgeFactor, h=gf_lip_height+fudgeFactor*4,
+            cyl_r=(innerLipRadius > innerWallRadius ? innerWallRadius : innerLipRadius)); // lip
 
-          hull() cornercopy(lip_inner_corner_center, num_x, num_y)
-            tz(filledInZ-gf_lip_height-lipSupportThickness-fudgeFactor) 
-            cylinder(
-              r1=innerWallRadius,
-              r2=innerLipRadius, h=q+fudgeFactor);   // ... to top of thin wall ...
+          _cavity_shape_cyl(cavity_shape, lip_inner_corner_center, num_x, num_y,
+            z=filledInZ-gf_lip_height-lipSupportThickness-fudgeFactor, h=q+fudgeFactor,
+            r1=innerWallRadius, r2=innerLipRadius); // ... to top of thin wall ...
         }
       }
     
       //Cavity below lip
       if(cavityHeight > 0)
-       hull() cornercopy(wall_inner_corner_center, num_x, num_y)
-        tz(floorht)
-          roundedCylinder(
-            h=cavityHeight,
-            r=innerWallRadius,
-            roundedr1=min(cavityHeight, cavity_floor_radius),
-            roundedr2=0);
+        _cavity_shape_rounded_cyl(cavity_shape, wall_inner_corner_center, num_x, num_y,
+          z=floorht, h=cavityHeight,
+          cyl_r=innerWallRadius,
+          roundedr1=min(cavityHeight, cavity_floor_radius),
+          roundedr2=0);
     } //union of main cavity
 
     if(sliding_lid_settings[iSlidingLid_Enabled])

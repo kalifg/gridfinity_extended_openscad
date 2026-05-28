@@ -26,6 +26,9 @@ wall_thickness = 0;  // .01
 //under size the bin top by this amount to allow for better stacking
 headroom = 0.8; // 0.1
 
+// Shape of the cup's inner cavity and lip. "rounded_rect" matches the cup's outer footprint (original behaviour). "circle" carves a single inscribed cylindrical cavity (with matching circular lip), useful for holding round bowls/beakers/jars. When using "circle" you'll typically also want vertical_chambers = 1, horizontal_chambers = 1, label_style = "disabled", fingerslide = "none".
+cavity_shape = "rounded_rect"; // [rounded_rect, circle]
+
 /* [Cup Lip] */
 // Style of the cup lip
 lip_style = "normal";  // [ normal, reduced, reduced_double, minimum, none:not stackable ]
@@ -324,6 +327,7 @@ set_environment(
   force_render = force_render)
 gridfinity_cup(
   filled_in=filled_in,
+  cavity_shape=cavity_shape,
   label_settings=LabelSettings(
     labelStyle=label_style,
     labelPosition=label_position,
