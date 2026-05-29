@@ -10,45 +10,56 @@ shelf_count = 6;
 // Vertical gap between shelves (top surface of one shelf to bottom surface of the next, in mm)
 shelf_spacing = 15;
 // Thickness of each shelf (Z, mm)
-shelf_thickness = 2;
+shelf_thickness = 3;
 // How far each shelf extends forward (−Y) from the back support, in mm. Use -1 to extend to the front edge of the gridfinity footprint.
 shelf_depth = -1;
-// Rounded corner radius of the shelf's free (front + side) edges, in mm.
+// Rounded corner radius of the shelf's front corners, in mm.
 shelf_front_radius = 3;
-// How much narrower (mm, per side) the front edge of each shelf is compared to the back edge.
-// 0 = parallel sides (rectangle). Positive values produce a trapezoidal plan view that tapers toward the front.
-shelf_front_inset = 30;
-// Angle (deg) at which each shelf tilts up from the back support wall.
-// 0 = horizontal. Positive = front edge lifts above the back edge (rear-rake, items held against the back wall).
-// The shelf pivots around the bottom-back edge where it meets the back support.
+// Hexagonal plan view: length (mm) of the STRAIGHT side portion measured from the back edge.
+// The shelf's sides run straight (full width) for this distance, then angle inward toward the front.
+// Combined with `shelf_front_inset`, this produces a 6-sided plan (back, two straight sides, two
+// angled sides, front). The straight portion provides solid material to support the row of back tabs.
+// 0 = no straight portion (the sides start tapering immediately = trapezoidal).
+shelf_back_straight = 15;
+// How much narrower (per side, mm) the front edge is compared to the back. 0 = no taper.
+shelf_front_inset = 25;
+// Angle (deg) at which each shelf tilts up from the back support wall. 0 = horizontal.
 shelf_front_angle = 15;
-// Amount (mm) to lower every shelf below its computed Z position. Useful when shelves are tilted:
-// the front edge rises by depth * sin(angle), so dropping the stack lets the lifted front edges sit
-// closer to the base. All shelves shift together so the spacing between them stays equal.
+// Amount (mm) to lower the entire shelf stack. Useful when shelves are tilted so the lifted front
+// edges sit closer to the base. All shelves shift together; inter-shelf spacing is preserved.
 shelves_drop = 10;
 
 /* [Back Support] */
 // Thickness of the back support wall (Y, mm)
-back_wall_thickness = 4;
-// Extra height of the back support above the top of the topmost shelf, in mm. The wall always extends down to the top of the base.
+back_wall_thickness = 6;
+// Extra height of the back support above the top of the topmost shelf, in mm.
 back_wall_overhang = 2;
+
+/* [Shelf Tabs] */
+// Number of tabs distributed evenly across the back edge of each shelf. The back wall gets a
+// matching slot at each tab's X position at every shelf height. So shelf_count x tab_count slots
+// total, arranged in `tab_count` vertical "columns" on the back wall.
+tab_count = 4;
+// X width of each tab (mm). Must fit within (back-wall-width / tab_count).
+tab_width = 10;
+// Y depth of each tab into the back wall (mm). Must be < back_wall_thickness.
+tab_depth = 5;
+// Inward taper (mm per side) at the front of each tab's plan view. 0 = rectangular tab (default,
+// easiest to print, no overhang in either the shelf or the slot). > 0 = dovetail tab in the XY
+// plane that locks the shelf against being pulled forward; the tab/slot then has an XY overhang.
+tab_dovetail = 0;
 
 /* [Print Pieces] */
 // Which piece to render.
-//   all   - the whole assembled model as a single solid (no slots, no tabs visible)
-//   base  - just the gridfinity base + back support, with slots cut for shelf tabs (printable)
-//   shelf - a single shelf laid flat for printing (back tab extends past the shelf body)
-// All shelves are identical, so the "shelf" piece is printed `shelf_count` times.
+//   all   - assembled preview: base + back wall (with all slots cut) + all tilted shelves seated
+//   base  - printable main piece: base + back wall with all slots cut
+//   shelf - one shelf, flat, with all tabs. Print this `shelf_count` times — all shelves are identical.
 part = "all"; // [all, base, shelf]
-// Clearance (mm) added around each tab when cutting the matching slot in the back wall.
-// Larger values = looser fit. Typical FDM tolerance is 0.15 - 0.3 mm.
+// Clearance (mm) added around the tab when cutting the matching slot. Typical FDM 0.15 - 0.3 mm.
 slot_tolerance = 0.2;
-// Dovetail flare (mm per side) at the back of each tab. The tab is narrower at the front (where it
-// enters the back wall) and flares to full shelf width at its deepest point. Combined with the
-// matching slot, this locks each shelf so it cannot be pulled forward; the shelf installs by sliding
-// it in horizontally from one side. 0 = no dovetail (friction-fit only; not recommended for loaded
-// shelves). 2 - 4 mm is typical for FDM at this scale.
-tab_dovetail = 3;
+// Extra distance (mm) the slot extends out the front face of the wall, giving the tab a lead-in
+// when sliding in. Visible as a small bevel at the front edge of each slot.
+slot_lead_in = 0.5;
 
 /* [Wall Pattern (cut through shelves)] */
 // Cut a pattern of holes through each shelf
@@ -132,91 +143,70 @@ $fa = fa;
 $fs = fs;
 $fn = fn;
 
-// Total Z height: enough to contain the base + first_offset + all shelves + spacing + back wall overhang.
-// We don't rely on a user "height" param; the model defines its own bounding height.
 set_environment(
   width = width,
   depth = depth,
-  height = [base_height_units, 0],     // only the base portion uses the gridfinity Z grid
+  height = [base_height_units, 0],
   render_position = render_position,
   help = enable_help,
   cut = [cutx, cuty, [base_height_units, 0]])
 Gridfinity_HorizontalShelves();
 
-// 2D rounded rectangle with optional separate corner radii
-module RoundedRect2D(size, radius){
-  _r = min(radius, min(size.x, size.y)/2);
-  if(_r <= 0){
-    square(size);
-  } else {
-    hull(){
-      for(x = [_r, size.x - _r])
-        for(y = [_r, size.y - _r])
-          translate([x, y]) circle(r = _r);
+// Hexagonal shelf footprint in plan view (X = width, Y = depth, +Y is back).
+//   - Back edge: full width straight
+//   - Two STRAIGHT side portions for `backStraight` mm forward from the back
+//   - Two ANGLED sides going forward and inward by `frontInset` per side
+//   - Front edge: full-width-minus-2*frontInset, with rounded corners
+// Setting backStraight = 0 reduces to a plain trapezoid (the previous shape).
+// Setting frontInset = 0 reduces to a rectangle (full width all around).
+module ShelfFootprint2D(size, frontRadius, frontInset = 0, backStraight = 0){
+  _inset    = max(0, min(frontInset, size.x/2 - fudgeFactor));
+  _straight = max(0, min(backStraight, size.y - fudgeFactor));
+  _r        = min(frontRadius, _inset > 0 ? _inset : size.x/2, size.y - _straight);
+  hull(){
+    // Back edge (full width)
+    translate([0, size.y - fudgeFactor]) square([size.x, fudgeFactor]);
+
+    // Where the side becomes straight back (only if we have a straight portion)
+    if(_straight > 0){
+      translate([0, size.y - _straight])
+        square([fudgeFactor, fudgeFactor]);
+      translate([size.x - fudgeFactor, size.y - _straight])
+        square([fudgeFactor, fudgeFactor]);
+    }
+
+    // Front corners (rounded if frontRadius > 0)
+    if(_r > 0){
+      translate([_inset + _r, _r]) circle(r=_r);
+      translate([size.x - _inset - _r, _r]) circle(r=_r);
+    } else {
+      translate([_inset, 0]) square([fudgeFactor, fudgeFactor]);
+      translate([size.x - _inset - fudgeFactor, 0]) square([fudgeFactor, fudgeFactor]);
     }
   }
 }
 
-// 2D shape used as the shelf footprint in plan view (X = width, Y = depth, +Y is back).
-// The shape has two regions joined at Y = pivotY:
-//   - Visible portion (Y = 0 .. pivotY): trapezoidal, rounded front corners with `frontInset`
-//     narrowing each side at the very front. At Y = pivotY the visible portion is full width
-//     so it butts flush against the back wall.
-//   - Tab portion (Y = pivotY .. size.y): the dovetail tab. At Y = pivotY the tab is narrower
-//     by `dovetailFlare` on each side; at Y = size.y it is full width. This produces a step at
-//     Y = pivotY that locks the assembled shelf against forward (-Y) removal — the shelf must
-//     be installed by sliding it horizontally (along X) into the matching slot.
-// When dovetailFlare = 0 the tab is rectangular (friction-fit only).
-// When pivotY = 0 the visible portion collapses and the whole shape is the tab (used in cases
-// where no visible shelf exists).
-module ShelfFootprint2D(size, frontRadius, frontInset = 0, dovetailFlare = 0, pivotY = 0){
-  _inset = max(0, min(frontInset, size.x/2 - fudgeFactor));
-  _r = min(frontRadius, min(size.x - 2*_inset, max(fudgeFactor, pivotY))/2);
-  _pivot = max(0, min(pivotY, size.y - fudgeFactor));
-  _flare = max(0, min(dovetailFlare, size.x/2 - fudgeFactor));
-
-  union(){
-    // 1. Visible portion: front rounded corners flaring out to full width at Y = pivotY.
-    if(_pivot > 0){
-      hull(){
-        // Full-width strip along Y = pivotY
-        translate([0, _pivot - fudgeFactor]) square([size.x, fudgeFactor*2]);
-
-        // Front corners
-        if(_r > 0){
-          translate([_inset + _r, _r]) circle(r=_r);
-          translate([size.x - _inset - _r, _r]) circle(r=_r);
-        } else {
-          translate([_inset, 0]) square([fudgeFactor, fudgeFactor]);
-          translate([size.x - _inset - fudgeFactor, 0]) square([fudgeFactor, fudgeFactor]);
-        }
-      }
-    }
-
-    // 2. Tab portion: dovetail flares from narrow (at Y = pivotY) to full width (at Y = size.y).
-    if(_pivot < size.y - fudgeFactor){
-      if(_flare > 0){
-        hull(){
-          // Narrow strip at front of tab
-          translate([_flare, _pivot]) square([size.x - _flare*2, fudgeFactor]);
-          // Full-width strip at back of tab
-          translate([0, size.y - fudgeFactor]) square([size.x, fudgeFactor]);
-        }
-      } else {
-        // No dovetail flare — plain rectangular tab
-        translate([0, _pivot]) square([size.x, size.y - _pivot]);
-      }
-    }
-  }
+// 2D shelf back-tab profile in the XY plane (X = width direction, Y = depth into wall).
+//   - Y=0 is the back edge of the shelf body (opening of the slot)
+//   - Y=depth is the deep end of the slot
+//   - Setting dovetail == 0 gives a plain rectangle (width = tabWidth)
+//   - Setting dovetail > 0 narrows the front (opening) end by dovetail on each side,
+//     producing a tab that's wider at the back than at the front (locks against -Y pull)
+module ShelfTabProfile2D(tabWidth, depth, dovetail = 0){
+  _dv = max(0, min(dovetail, tabWidth/2 - fudgeFactor));
+  polygon(points = [
+    [ -tabWidth/2 + _dv, 0],
+    [  tabWidth/2 - _dv, 0],
+    [  tabWidth/2,       depth],
+    [ -tabWidth/2,       depth]
+  ]);
 }
 
-// 2D shape for the back support: square on the front edge, rounded on the back two corners
+// 2D back-wall footprint: square front edge, rounded back corners
 module BackWallFootprint2D(size, backRadius){
   _r = min(backRadius, min(size.x, size.y)/2);
   hull(){
-    // Square front edge (y = 0)
     translate([0, 0]) square([size.x, fudgeFactor]);
-    // Rounded back corners
     if(_r > 0){
       translate([_r, size.y - _r]) circle(r=_r);
       translate([size.x - _r, size.y - _r]) circle(r=_r);
@@ -243,15 +233,20 @@ module Gridfinity_HorizontalShelves(
   shelfThickness = shelf_thickness,
   shelfDepth = shelf_depth,
   shelfFrontRadius = shelf_front_radius,
+  shelfBackStraight = shelf_back_straight,
   shelfFrontInset = shelf_front_inset,
   shelfFrontAngle = shelf_front_angle,
   shelvesDrop = shelves_drop,
   backWallThickness = back_wall_thickness,
   backWallOverhang = back_wall_overhang,
   baseHeightUnits = base_height_units,
+  tabCount = tab_count,
+  tabWidth = tab_width,
+  tabDepth = tab_depth,
+  tabDovetail = tab_dovetail,
   partToRender = part,
   slotTolerance = slot_tolerance,
-  tabDovetail = tab_dovetail,
+  slotLeadIn = slot_lead_in,
   wallpatternEnabled = wallpattern_enabled,
   pattern_settings = PatternSettings(
     patternEnabled = wallpattern_enabled,
@@ -273,11 +268,14 @@ module Gridfinity_HorizontalShelves(
   assert(shelfSpacing >= 0, "shelf_spacing must be >= 0");
   assert(shelfThickness > 0, "shelf_thickness must be > 0");
   assert(backWallThickness > 0, "back_wall_thickness must be > 0");
+  assert(tabCount >= 1, "tab_count must be >= 1");
+  assert(tabWidth > 0, "tab_width must be > 0");
+  assert(tabDepth > 0 && tabDepth < backWallThickness,
+    "tab_depth must be > 0 and < back_wall_thickness.");
 
   num_x = calcDimensionWidth(width);
   num_y = calcDimensionDepth(depth);
 
-  // Outer footprint of the gridfinity unit (minus clearance) in plan
   outerSize = [
     num_x*env_pitch().x - env_clearance().x,
     num_y*env_pitch().y - env_clearance().y
@@ -287,13 +285,7 @@ module Gridfinity_HorizontalShelves(
 
   topOfBase = baseHeightUnits * env_pitch().z;
 
-  // Compute shelf Z positions (Z of the bottom face of each shelf).
-  // The top of the gridfinity base is treated as the "zeroth shelf surface",
-  // so the bottom of shelf i sits (i+1) * shelfSpacing above the base
-  // plus the thickness of all shelves below it. The entire stack can be
-  // optionally lowered by `shelvesDrop` (helpful when shelves are tilted
-  // so the lifted front edges do not sit too high above the base). All
-  // shelves shift together, so inter-shelf spacing remains equal.
+  // Shelf Z positions (bottom face) with `shelves_drop` applied.
   shelfBottoms = [
     for(i = [0 : shelfCount-1])
       topOfBase + (i+1) * shelfSpacing + i * shelfThickness - shelvesDrop
@@ -304,51 +296,51 @@ module Gridfinity_HorizontalShelves(
   assert(shelfBottoms[0] >= topOfBase,
     "shelves_drop is larger than shelf_spacing; the bottom shelf would dip into the gridfinity base.");
 
-  // Back support: spans full X across the back of the footprint.
-  // It occupies the +Y back portion with thickness `backWallThickness`.
+  // Back support Y range (spans full X across the back of the footprint).
   backWallY0 = outerOrigin.y + outerSize.y - backWallThickness;
   backWallY1 = outerOrigin.y + outerSize.y;
 
-  // Shelf Y extent: from the front face of the back wall forward
+  // Shelf body Y range
   _shelfDepth = shelfDepth < 0
-    ? (backWallY0 - outerOrigin.y)            // extend forward to the front of the footprint
+    ? (backWallY0 - outerOrigin.y)
     : min(shelfDepth, backWallY0 - outerOrigin.y);
   shelfY0 = backWallY0 - _shelfDepth;
-  // Each shelf extends all the way through the back wall (Y up to backWallY1) so that,
-  // when tilted, its back edge stays embedded inside the back wall instead of gapping out.
-  // We then clip with an intersection at Y = backWallY1 so it never pokes out the back.
-  shelfY1 = backWallY1;
+  shelfY1 = backWallY0;
+
+  assert(shelfBackStraight <= shelfY1 - shelfY0,
+    "shelf_back_straight is larger than the shelf depth; reduce it or extend shelf_depth.");
+
+  // Tab X centers (shared by every shelf; the back wall has one column at each X).
+  tabXAllot = outerSize.x / tabCount;
+  assert(tabWidth + 2 <= tabXAllot,
+    "tab_width is too wide for tab_count; reduce tab_width or tab_count.");
+  shelfTabXCenters = [
+    for(j = [0 : tabCount-1])
+      outerOrigin.x + (j + 0.5) * tabXAllot
+  ];
 
   if(env_help_enabled("debug"))
     echo("Gridfinity_HorizontalShelves",
-      outerSize=outerSize, outerOrigin=outerOrigin,
-      topOfBase=topOfBase, totalHeight=totalHeight,
+      outerSize=outerSize, topOfBase=topOfBase, totalHeight=totalHeight,
       shelfBottoms=shelfBottoms,
-      backWallY=[backWallY0, backWallY1],
-      shelfY=[shelfY0, shelfY1],
-      shelfDepth=_shelfDepth);
+      backWallY=[backWallY0, backWallY1], shelfY=[shelfY0, shelfY1],
+      shelfDepth=_shelfDepth, tabXCenters=shelfTabXCenters);
 
-  // --- Shelf geometry shared by every "part" mode ---
   shelfPlanSize = [outerSize.x, shelfY1 - shelfY0];
   _border = wallpattern_border == 0 ? shelfFrontRadius : wallpattern_border;
-  // Distance in Y from the shelf's local origin (front edge) to its pivot at the front face of the back wall
-  pivotOffsetY = backWallY0 - shelfY0;
 
-  // The shelf body in its own local frame (Y=0 is the front edge, Y=shelfPlanSize.y is the back of the tab).
-  // `padding` inflates X and Z (used to build the slot cutter slightly larger than the tab).
-  module unrotatedShelfBody(padding = 0){
-    translate([-padding, 0, -padding])
-    linear_extrude(height = shelfThickness + padding*2)
+  // Shelf body (no tabs) in shelf-local frame. Front-left-bottom of body at local origin.
+  module shelfBodyOnly(){
+    linear_extrude(height = shelfThickness)
       ShelfFootprint2D(
-        size = [shelfPlanSize.x + padding*2, shelfPlanSize.y],
+        size = shelfPlanSize,
         frontRadius = shelfFrontRadius,
         frontInset = shelfFrontInset,
-        dovetailFlare = tabDovetail,
-        pivotY = pivotOffsetY);
+        backStraight = shelfBackStraight);
   }
 
-  // Pattern cutout for a shelf in its own local frame.
-  module unrotatedShelfPatternCut(){
+  // Shelf pattern cutout in shelf-local frame.
+  module shelfPatternCut(){
     translate([0, 0, -fudgeFactor])
     intersection(){
       linear_extrude(height = shelfThickness + fudgeFactor*2)
@@ -357,8 +349,7 @@ module Gridfinity_HorizontalShelves(
             size = shelfPlanSize,
             frontRadius = shelfFrontRadius,
             frontInset = shelfFrontInset,
-            dovetailFlare = tabDovetail,
-            pivotY = pivotOffsetY);
+            backStraight = shelfBackStraight);
 
       translate([shelfPlanSize.x/2, shelfPlanSize.y/2])
       cutout_pattern(
@@ -383,32 +374,50 @@ module Gridfinity_HorizontalShelves(
     }
   }
 
-  // Position+tilt children to shelf `i`'s assembled location. Children should be authored in the
-  // shelf's local frame (origin at front-left-bottom of the shelf body).
+  // One back-edge tab in shelf-local frame, centered at the given X (local).
+  // `padding` inflates the tab in X, Y and Z (used to build the slot cutter slightly larger
+  // than the tab for fit clearance).
+  module shelfTabAt(tabXLocal, padding = 0){
+    _depth = tabDepth + padding;
+    translate([tabXLocal, shelfPlanSize.y, -padding])
+    linear_extrude(height = shelfThickness + 2*padding)
+      ShelfTabProfile2D(tabWidth + 2*padding, _depth, tabDovetail);
+  }
+
+  // Full shelf piece in shelf-local frame: hex body + all tabs along the back edge.
+  module unrotatedShelf(){
+    difference(){
+      union(){
+        shelfBodyOnly();
+        for(j = [0 : tabCount-1]){
+          tabXLocal = shelfTabXCenters[j] - outerOrigin.x;
+          shelfTabAt(tabXLocal);
+        }
+      }
+      if(wallpatternEnabled) shelfPatternCut();
+    }
+  }
+
+  // Position+tilt children into shelf `i`'s assembled world location. Pivot is at the back-bottom
+  // edge of the shelf body where it meets the front face of the back wall.
   module positionShelf(i){
     z = shelfBottoms[i];
     translate([outerOrigin.x, backWallY0, z])
     rotate([-shelfFrontAngle, 0, 0])
-    translate([0, -pivotOffsetY, 0])
-    children();
+    translate([0, -shelfPlanSize.y, 0])
+      children();
   }
 
-  // Clip box for the assembled view: keeps each rotated shelf from poking through the back of the back wall.
-  clipExtent = 1000;
-  module shelfAssembledClip(){
-    translate([outerOrigin.x - clipExtent, shelfY0 - clipExtent, -clipExtent])
-      cube([outerSize.x + clipExtent*2,
-            (backWallY1 - shelfY0) + clipExtent,
-            clipExtent*3]);
+  // Slot cutter for shelf `i`, tab `j`. Inflated by slot_tolerance. Also extends slot_lead_in
+  // forward of the wall's front face so the tab has a small lead-in.
+  module shelfSlotCutter(i, j){
+    tabXLocal = shelfTabXCenters[j] - outerOrigin.x;
+    positionShelf(i)
+      translate([0, -slotLeadIn, 0])  // shift in -Y in shelf-local frame so cutter pokes past front face
+        shelfTabAt(tabXLocal, padding = slotTolerance);
   }
 
-  // Clip box used when cutting slots: limits the slot volume to the back wall's Y range.
-  module backWallSliceClip(){
-    translate([outerOrigin.x - clipExtent, backWallY0, -clipExtent])
-      cube([outerSize.x + clipExtent*2,
-            backWallThickness,
-            clipExtent*3]);
-  }
+  // ============ MAIN-PIECE GEOMETRY ============
 
   module gridfinityBase(){
     grid_block(
@@ -423,7 +432,6 @@ module Gridfinity_HorizontalShelves(
   }
 
   module backWallSolid(){
-    // BackWallFootprint2D is laid out with its square front edge at local y=0 and rounded back at local y=size.y.
     color(env_colour(color_cup))
     translate([outerOrigin.x, backWallY0, topOfBase])
     linear_extrude(height = totalHeight - topOfBase)
@@ -432,50 +440,38 @@ module Gridfinity_HorizontalShelves(
         backRadius = outerRadius);
   }
 
-  // The assembled shelf at index `i`, with its pattern cutouts and clipped at the back wall back face.
+  module backWallWithSlots(){
+    difference(){
+      backWallSolid();
+      for(i = [0 : shelfCount-1])
+        for(j = [0 : tabCount-1])
+          shelfSlotCutter(i, j);
+    }
+  }
+
+  // ============ ASSEMBLED PREVIEW ============
+
   module assembledShelf(i){
     color(env_colour(color_cup))
-    intersection(){
-      positionShelf(i)
-        difference(){
-          unrotatedShelfBody();
-          if(wallpatternEnabled) unrotatedShelfPatternCut();
-        }
-
-      shelfAssembledClip();
-    }
+    positionShelf(i) unrotatedShelf();
   }
 
-  // Inflated rotated tab volume for shelf `i`, clipped to the back wall Y range, used as a slot cutter.
-  module shelfSlotCutter(i){
-    intersection(){
-      positionShelf(i) unrotatedShelfBody(padding = slotTolerance);
-      backWallSliceClip();
-    }
-  }
+  // ============ PRINTABLE SHELF ============
 
-  // A single shelf laid flat (untilted, at z=0) for printing. Includes the tab so it slots into the slot.
+  // Single shelf piece (all shelves are identical). Print this `shelf_count` times.
   module printableShelf(){
     color(env_colour(color_cup))
-    difference(){
-      unrotatedShelfBody();
-      if(wallpatternEnabled) unrotatedShelfPatternCut();
-    }
+      unrotatedShelf();
   }
 
-  // --- Dispatch on which part to render ---
+  // ============ DISPATCH ============
   if(partToRender == "all"){
     gridfinityBase();
-    backWallSolid();
+    backWallWithSlots();
     for(i = [0 : shelfCount-1]) assembledShelf(i);
   } else if(partToRender == "base"){
     gridfinityBase();
-    difference(){
-      backWallSolid();
-      union(){
-        for(i = [0 : shelfCount-1]) shelfSlotCutter(i);
-      }
-    }
+    backWallWithSlots();
   } else if(partToRender == "shelf"){
     printableShelf();
   } else {
