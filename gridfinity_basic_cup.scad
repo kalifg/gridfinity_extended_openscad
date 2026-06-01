@@ -14,17 +14,25 @@ use <modules/module_gridfinity_block.scad>
 /*<!!start gridfinity_basic_cup!!>*/
 /* [General Cup] */
 // X dimension. grid units (multiples of 42mm) or mm.
-width = [2, 0]; //0.1
+width = [4.5, 0]; //0.1
 // Y dimension. grid units (multiples of 42mm) or mm.
-depth = [1, 0]; //0.1
+depth = [4.5, 0]; //0.1
 // Z dimension excluding. grid units (multiples of 7mm) or mm.
-height = [3, 0]; //0.1
+height = [2, 0]; //0.1
 // Fill in solid block (overrides all following options)
 filled_in = "disabled"; //[disabled, enabled, enabledfilllip:"Fill cup and lip"]
 // Wall thickness of outer walls. default, height < 8 0.95, height < 16 1.2, height > 16 1.6 (Zack's design is 0.95 mm)
 wall_thickness = 0;  // .01
 //under size the bin top by this amount to allow for better stacking
 headroom = 0.8; // 0.1
+
+// Shape of the cup's inner cavity and lip. "rounded_rect" matches the cup's outer footprint (original behaviour). "circle" carves a single inscribed cylindrical cavity (with matching circular lip), useful for holding round bowls/beakers/jars. When using "circle" you'll typically also want vertical_chambers = 1, horizontal_chambers = 1, label_style = "disabled", fingerslide = "none".
+cavity_shape = "circle"; // [rounded_rect, circle]
+// Override diameter of the circle cavity in mm. 0 = auto (inscribed in the cup interior). Set this smaller than the inscribed maximum to leave a connected ring of material for cavity_inset prints (essential for square cups, where the inscribed circle would leave only degenerate corner slivers). The cup's circle cavity AND the cavity_inset both use this diameter, so they match perfectly.
+cavity_circle_diameter = 0; // 0.1
+
+// Which part to render. "all" renders the cup with the selected cavity_shape applied (normal behaviour). "cup" renders the cup with a rounded_rect cavity regardless of cavity_shape, matching the basic cup body (useful if you already printed the cup and want it on its own). "cavity_inset" renders just the inset piece (rounded_rect cavity minus circle cavity) that drops into an already-printed rect-cavity cup to convert it to a circular cavity. Only meaningful when cavity_shape = "circle".
+part = "cavity_inset"; // [all, cup, cavity_inset]
 
 /* [Cup Lip] */
 // Style of the cup lip
@@ -308,6 +316,7 @@ $fa = fa;
 $fs = fs;
 $fn = fn;
 
+if (part == "all" || part == "cup")
 set_environment(
   width = width,
   depth = depth,
@@ -324,6 +333,8 @@ set_environment(
   force_render = force_render)
 gridfinity_cup(
   filled_in=filled_in,
+  cavity_shape = part == "cup" ? "rounded_rect" : cavity_shape,
+  cavity_circle_diameter=cavity_circle_diameter,
   label_settings=LabelSettings(
     labelStyle=label_style,
     labelPosition=label_position,
@@ -463,3 +474,66 @@ gridfinity_cup(
     baseTextFont = text_font,
     baseTextDepth = text_depth,
     baseTextOffset = text_offset));
+
+if (part == "cavity_inset")
+set_environment(
+  width = width,
+  depth = depth,
+  height = height,
+  height_includes_lip = height_includes_lip,
+  lip_enabled = lip_style != "none",
+  render_position = render_position,
+  help = enable_help,
+  pitch = pitch,
+  clearance = clearance,
+  cut = cut,
+  setColour = set_colour,
+  randomSeed = random_seed,
+  force_render = force_render)
+gridfinity_cup_cavity_inset(
+  wall_thickness=wall_thickness,
+  cavity_circle_diameter=cavity_circle_diameter,
+  finger_slide_settings = FingerSlideSettings(
+    type = fingerslide,
+    radius = fingerslide_radius,
+    walls = fingerslide_walls,
+    lip_aligned = fingerslide_lip_aligned),
+  cupBase_settings = CupBaseSettings(
+    magnetSize = enable_magnets?magnet_size:[0,0],
+    magnetEasyRelease = magnet_easy_release,
+    magnetSideAccess = magnet_side_access,
+    magnetCaptiveHeight = magnet_captive_height,
+    magnetCrushDepth = magnet_crush_depth,
+    magnetChamfer = magnet_chamfer,
+    centerMagnetSize = center_magnet_size,
+    screwSize = enable_screws?screw_size:[0,0],
+    holeOverhangRemedy = hole_overhang_remedy,
+    cornerAttachmentsOnly = box_corner_attachments_only,
+    floorThickness = floor_thickness,
+    cavityFloorRadius = cavity_floor_radius,
+    efficientFloor=efficient_floor,
+    subPitch=sub_pitch,
+    flatBase=flat_base,
+    spacer=spacer,
+    minimumPrintablePadSize=minimum_printable_pad_size,
+    flatBaseRoundedRadius = flat_base_rounded_radius,
+    flatBaseRoundedEasyPrint = flat_base_rounded_easyPrint,
+    alignGrid = [align_grid_x, align_grid_y]
+    ),
+  lip_settings = LipSettings(
+    lipStyle=lip_style,
+    lipSideReliefTrigger=lip_side_relief_trigger,
+    lipTopReliefHeight=lip_top_relief_height,
+    lipTopReliefWidth=lip_top_relief_width,
+    lipNotch=lip_top_notches,
+    lipClipPosition=lip_clip_position,
+    lipNonBlocking=lip_non_blocking),
+  sliding_lid_settings = SlidingLidSettings(
+    enabled = sliding_lid_enabled,
+    thickness = sliding_lid_thickness,
+    min_wall_thickness = sliding_lid_min_wall_thickness,
+    min_support = sliding_lid_min_support,
+    clearance = sliding_lid_clearance,
+    pull_style = sliding_lid_pull_style,
+    nub_size = sliding_lid_nub_size),
+  headroom=headroom);

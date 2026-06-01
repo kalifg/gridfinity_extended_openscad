@@ -34,6 +34,11 @@ default_wall_thickness = 0;// 0.01
 //under size the bin top by this amount to allow for better stacking
 default_headroom = 0.8; // 0.1
 
+// Shape of the cup's inner cavity and lip. "rounded_rect" matches the cup's outer footprint (original behaviour). "circle" carves a single inscribed cylindrical cavity (with matching circular lip), useful for holding round bowls/beakers/jars.
+default_cavity_shape = "rounded_rect"; // [rounded_rect, circle]
+// Override the diameter of the circle cavity in mm. 0 = auto (inscribed in the cup's cavity). Setting this lets you choose a smaller bore so the cavity_inset has a connected ring of material around the circle (recommended for square cups where the inscribed circle would leave only degenerate corner slivers).
+default_cavity_circle_diameter = 0; // 0.1
+
 /* [Cup Lip] */
 // Style of the cup lip
 default_lip_style = "normal";  // [ normal, reduced, minimum, none:not stackable ]
@@ -232,6 +237,8 @@ module gridfinity_cup(
   height,
   filled_in=default_filled_in,
   wall_thickness=default_wall_thickness,
+  cavity_shape=default_cavity_shape,
+  cavity_circle_diameter=default_cavity_circle_diameter,
   label_settings=LabelSettings(
     labelStyle=default_label_style, 
     labelPosition=default_label_position, 
@@ -493,6 +500,8 @@ module gridfinity_cup(
             cupBase_settings = cupBase_settings,
             finger_slide_settings = finger_slide_settings,
             wall_thickness=wall_thickness,
+            cavity_shape=cavity_shape,
+            cavity_circle_diameter=cavity_circle_diameter,
             calculated_vertical_separator_positions = calculated_vertical_separator_positions,
             calculated_horizontal_separator_positions = calculated_horizontal_separator_positions,
             lip_settings=lip_settings,
@@ -685,6 +694,116 @@ module gridfinity_cup(
     ,"extendable_Settings",extendable_Settings
     ]
     ,env_help_enabled("info"));  
+}
+
+// Renders just the "cavity inset" piece: the solid that fills the space
+// between a rounded_rect cavity and an inscribed circle cavity. This lets you
+// print the inset on its own and drop it into an already-printed cup whose
+// inside is the standard rounded_rect cavity, converting it to a circle cavity.
+//
+// All cavity-shaping inputs (dimensions, walls, lip style, base, headroom)
+// must match the cup you printed, so the inset's outer rounded_rect surface
+// fits the cup interior exactly.
+module gridfinity_cup_cavity_inset(
+  width,
+  depth,
+  height,
+  wall_thickness=default_wall_thickness,
+  cavity_circle_diameter=default_cavity_circle_diameter,
+  finger_slide_settings = FingerSlideSettings(
+    type=default_fingerslide,
+    radius=default_fingerslide_radius,
+    walls=default_fingerslide_walls,
+    lip_aligned=default_fingerslide_lip_aligned),
+  cupBase_settings = CupBaseSettings(
+    magnetSize = default_magnet_size,
+    magnetEasyRelease = default_magnet_easy_release,
+    magnetCaptiveHeight = default_magnet_captive_height,
+    centerMagnetSize = default_center_magnet_size,
+    screwSize = default_screw_size,
+    holeOverhangRemedy = default_hole_overhang_remedy,
+    cornerAttachmentsOnly = default_box_corner_attachments_only,
+    floorThickness = default_floor_thickness,
+    cavityFloorRadius = default_cavity_floor_radius,
+    efficientFloor=default_efficient_floor,
+    subPitch=default_sub_pitch,
+    flatBase=default_flat_base,
+    spacer=default_spacer),
+  lip_settings = LipSettings(
+    lipStyle=default_lip_style,
+    lipSideReliefTrigger=default_lip_side_relief_trigger,
+    lipTopReliefHeight=default_lip_top_relief_height,
+    lipNotch=default_lip_top_notches),
+  sliding_lid_settings = SlidingLidSettings(
+    enabled = default_sliding_lid_enabled,
+    thickness = default_sliding_lid_thickness,
+    min_wall_thickness = default_sliding_min_wall_thickness,
+    min_support = default_sliding_min_support,
+    clearance = default_sliding_clearance,
+    pull_style = default_sliding_lid_pull_style),
+  headroom = default_headroom) {
+
+  num_x = is_undef(width) ?  $num_x : calcDimensionWidth(width, true);
+  num_y = is_undef(depth) ? $num_y : calcDimensionDepth(depth, true);
+  num_z = is_undef(height) ? $num_z : calcDimensionHeight(height, true);
+
+  wall_thickness = wallThickness(wall_thickness, num_z);
+
+  cupBase_settings = ValidateCupBaseSettings(cupBase_settings);
+  slidingLidSettings = ValidateSlidingLidSettings(sliding_lid_settings, wall_thickness);
+  headroom = headroom + (slidingLidSettings[iSlidingLid_Enabled] ? slidingLidSettings[iSlidingLid_Thickness] : 0);
+
+  // Geometry of the printed cup's inner cavity, replicated from basic_cavity:
+  //   innerLipRadius is used at the lip (smallest dimension along XY at the cup's
+  //   top opening); that's what the inset must clear to slide in from above.
+  //   innerWallRadius is the corner radius below the lip; the inset can sit
+  //   inside this but we cap to lip dimensions so it actually fits through.
+  innerWallRadius = max(0.1, env_corner_radius() - wall_thickness);
+  innerLipRadius = env_corner_radius() - gf_lip_lower_taper_height - gf_lip_upper_taper_height;
+  outerCornerR = min(innerWallRadius, innerLipRadius);
+
+  inner_corner_center = [
+    env_pitch().x/2 - env_corner_radius() - env_clearance().x/2,
+    env_pitch().y/2 - env_corner_radius() - env_clearance().y/2];
+
+  floorht = calculateFloorHeight(
+    magnet_depth = cupBase_settings[iCupBase_MagnetSize][iCylinderDimension_Height],
+    screw_depth  = cupBase_settings[iCupBase_ScrewSize][iCylinderDimension_Height],
+    center_magnet= cupBase_settings[iCupBase_CenterMagnetSize][iCylinderDimension_Height],
+    floor_thickness = cupBase_settings[iCupBase_FloorThickness],
+    num_z = num_z,
+    filled_in = FilledIn_disabled,
+    efficient_floor = cupBase_settings[iCupBase_EfficientFloor],
+    flat_base = cupBase_settings[iCupBase_FlatBase],
+    captive_magnet_height = cupBase_settings[iCupBase_MagnetCaptiveHeight]);
+
+  filledInZ = env_pitch().z * num_z;
+  // Stop just below the lip top so the inset can drop in cleanly without
+  // contacting the lip's stacking surface.
+  insetTopZ = filledInZ - max(headroom, 0);
+  insetHeight = max(0, insetTopZ - floorht);
+
+  cx = env_pitch().x * num_x / 2;
+  cy = env_pitch().y * num_y / 2;
+  circleR = cavity_circle_diameter > 0 ? cavity_circle_diameter / 2 : 0;
+
+  if (insetHeight > 0 && circleR > 0) {
+    color(env_colour(color_cupcavity))
+    difference() {
+      // Outer envelope: rounded-rect sized to the cup's lip opening so the
+      // inset always passes through the lip when inserted from above.
+      tz(floorht)
+        hull() cornercopy(inner_corner_center, num_x, num_y)
+          cylinder(r = outerCornerR, h = insetHeight);
+
+      // Circular bore.
+      translate([cx, cy, floorht - fudgeFactor])
+        cylinder(r = circleR, h = insetHeight + fudgeFactor * 2);
+    }
+  } else {
+    if (circleR <= 0)
+      echo("gridfinity_cup_cavity_inset: cavity_circle_diameter must be > 0 to render an inset.");
+  }
 }
 
 module bin_wall_pattern(
@@ -1138,6 +1257,8 @@ module partitioned_cavity(num_x, num_y, num_z,
     cupBase_settings=[],
     finger_slide_settings=[],
     wall_thickness=0,
+    cavity_shape=default_cavity_shape,
+    cavity_circle_diameter=default_cavity_circle_diameter,
     calculated_vertical_separator_positions=calculated_vertical_separator_positions,
     calculated_horizontal_separator_positions=calculated_horizontal_separator_positions,
     lip_settings=[], 
@@ -1171,6 +1292,8 @@ module partitioned_cavity(num_x, num_y, num_z,
       cupBase_settings=cupBase_settings,
       finger_slide_settings = finger_slide_settings,
       wall_thickness=wall_thickness,
+      cavity_shape=cavity_shape,
+      cavity_circle_diameter=cavity_circle_diameter,
       lip_settings=lip_settings, 
       sliding_lid_settings=sliding_lid_settings, 
       headroom=headroom);
@@ -1212,9 +1335,69 @@ module partitioned_cavity(num_x, num_y, num_z,
 
 
 
+// Helper for basic_cavity. Replaces the
+//   hull() cornercopy(corner_offset, num_x, num_y) tz(z) cylinder(r=R, h=H)
+// (or r1=,r2= cone) pattern with either the original hull-of-corner-cylinders
+// rounded-rect, or a single inscribed cylinder at the cup's center when
+// cavity_shape == "circle".
+module _cavity_shape_cyl(cavity_shape, corner_offset, num_x, num_y, z, h,
+                         cyl_r=undef, r1=undef, r2=undef,
+                         circle_diameter=0) {
+  is_cone = !is_undef(r1) || !is_undef(r2);
+  effective_outer_r = is_cone ? max(r1, r2) : cyl_r;
+  if(cavity_shape == "circle") {
+    // Outer extent the equivalent rounded rect would have occupied:
+    //   2*corner_offset + 2*effective_outer_r per axis.
+    extent_x = env_pitch().x * (num_x - 1) + 2*corner_offset.x + 2*effective_outer_r;
+    extent_y = env_pitch().y * (num_y - 1) + 2*corner_offset.y + 2*effective_outer_r;
+    // Inscribed radius, or user-specified diameter/2 if provided.
+    R_top = circle_diameter > 0
+      ? min(circle_diameter/2, min(extent_x, extent_y) / 2)
+      : min(extent_x, extent_y) / 2;
+    cx = env_pitch().x * num_x / 2;
+    cy = env_pitch().y * num_y / 2;
+    translate([cx, cy, z])
+      if(is_cone)
+        cylinder(r1 = R_top - (effective_outer_r - r1),
+                 r2 = R_top - (effective_outer_r - r2),
+                 h = h);
+      else
+        cylinder(r = R_top, h = h);
+  } else {
+    tz(z) hull() cornercopy(corner_offset, num_x, num_y)
+      if(is_cone)
+        cylinder(r1=r1, r2=r2, h=h);
+      else
+        cylinder(r=cyl_r, h=h);
+  }
+}
+
+// Same as _cavity_shape_cyl but for the rounded-bottom main cavity that uses
+// roundedCylinder(h, r, roundedr1, roundedr2).
+module _cavity_shape_rounded_cyl(cavity_shape, corner_offset, num_x, num_y, z, h,
+                                 cyl_r, roundedr1=0, roundedr2=0,
+                                 circle_diameter=0) {
+  if(cavity_shape == "circle") {
+    extent_x = env_pitch().x * (num_x - 1) + 2*corner_offset.x + 2*cyl_r;
+    extent_y = env_pitch().y * (num_y - 1) + 2*corner_offset.y + 2*cyl_r;
+    R_top = circle_diameter > 0
+      ? min(circle_diameter/2, min(extent_x, extent_y) / 2)
+      : min(extent_x, extent_y) / 2;
+    cx = env_pitch().x * num_x / 2;
+    cy = env_pitch().y * num_y / 2;
+    translate([cx, cy, z])
+      roundedCylinder(h=h, r=R_top, roundedr1=roundedr1, roundedr2=roundedr2);
+  } else {
+    tz(z) hull() cornercopy(corner_offset, num_x, num_y)
+      roundedCylinder(h=h, r=cyl_r, roundedr1=roundedr1, roundedr2=roundedr2);
+  }
+}
+
 module basic_cavity(num_x, num_y, num_z, 
     finger_slide_settings = [],
     wall_thickness=default_wall_thickness,
+    cavity_shape=default_cavity_shape,
+    cavity_circle_diameter=default_cavity_circle_diameter,
     lip_settings = [],
     cupBase_settings = [],
     sliding_lid_settings = [],
@@ -1315,36 +1498,37 @@ module basic_cavity(num_x, num_y, num_z,
       else { // normal
         lowerTaperZ = filledInZ-gf_lip_height-lipSupportThickness;
         if(lowerTaperZ <= floorht){
-          hull() cornercopy(lip_inner_corner_center, num_x, num_y)
-            tz(floorht) 
-            cylinder(r=innerLipRadius, h=filledInZ-floorht+fudgeFactor*4); // lip
+          _cavity_shape_cyl(cavity_shape, lip_inner_corner_center, num_x, num_y,
+            z=floorht, h=filledInZ-floorht+fudgeFactor*4,
+            cyl_r=innerLipRadius,
+            circle_diameter=cavity_circle_diameter); // lip
         } else {
           if(headroom > 0)
-          hull() cornercopy(inner_corner_center, num_x, num_y)
-            tz(filledInZ-headroom-fudgeFactor) 
-            cylinder(r=innerLipRadius, h=headroom+fudgeFactor*4); // lip
+          _cavity_shape_cyl(cavity_shape, inner_corner_center, num_x, num_y,
+            z=filledInZ-headroom-fudgeFactor, h=headroom+fudgeFactor*4,
+            cyl_r=innerLipRadius,
+            circle_diameter=cavity_circle_diameter); // lip
 
-          hull() cornercopy(lip_inner_corner_center, num_x, num_y)
-            tz(filledInZ-gf_lip_height-fudgeFactor) 
-            cylinder(r=(innerLipRadius > innerWallRadius ? innerWallRadius : innerLipRadius), h=gf_lip_height+fudgeFactor*4); // lip
+          _cavity_shape_cyl(cavity_shape, lip_inner_corner_center, num_x, num_y,
+            z=filledInZ-gf_lip_height-fudgeFactor, h=gf_lip_height+fudgeFactor*4,
+            cyl_r=(innerLipRadius > innerWallRadius ? innerWallRadius : innerLipRadius),
+            circle_diameter=cavity_circle_diameter); // lip
 
-          hull() cornercopy(lip_inner_corner_center, num_x, num_y)
-            tz(filledInZ-gf_lip_height-lipSupportThickness-fudgeFactor) 
-            cylinder(
-              r1=innerWallRadius,
-              r2=innerLipRadius, h=q+fudgeFactor);   // ... to top of thin wall ...
+          _cavity_shape_cyl(cavity_shape, lip_inner_corner_center, num_x, num_y,
+            z=filledInZ-gf_lip_height-lipSupportThickness-fudgeFactor, h=q+fudgeFactor,
+            r1=innerWallRadius, r2=innerLipRadius,
+            circle_diameter=cavity_circle_diameter); // ... to top of thin wall ...
         }
       }
     
       //Cavity below lip
       if(cavityHeight > 0)
-       hull() cornercopy(wall_inner_corner_center, num_x, num_y)
-        tz(floorht)
-          roundedCylinder(
-            h=cavityHeight,
-            r=innerWallRadius,
-            roundedr1=min(cavityHeight, cavity_floor_radius),
-            roundedr2=0);
+        _cavity_shape_rounded_cyl(cavity_shape, wall_inner_corner_center, num_x, num_y,
+          z=floorht, h=cavityHeight,
+          cyl_r=innerWallRadius,
+          roundedr1=min(cavityHeight, cavity_floor_radius),
+          roundedr2=0,
+          circle_diameter=cavity_circle_diameter);
     } //union of main cavity
 
     if(sliding_lid_settings[iSlidingLid_Enabled])
